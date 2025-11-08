@@ -3,523 +3,566 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Green Plaid Jumper</title>
+<title>Green Plaid Jumper — Ver 2</title>
 <style>
-  html, body { margin:0; background:#222; height:100%; }
-  canvas { display:block; margin:0 auto; image-rendering: pixelated; image-rendering: crisp-edges; }
-  .hud {
-    position:fixed; left:50%; transform:translateX(-50%);
-    top:8px; color:#fff; font:16px/1.2 monospace; text-shadow:0 2px 0 #000;
-    display:flex; gap:24px; align-items:center;
+  html,body{margin:0;background:#1e1e24;height:100%}
+  canvas{display:block;margin:0 auto;image-rendering:pixelated;image-rendering:crisp-edges}
+  .hud{
+    position:fixed;left:50%;transform:translateX(-50%);top:8px;
+    color:#fff;font:16px/1.2 monospace;text-shadow:0 2px 0 #000;
+    display:flex;gap:24px;align-items:center;z-index:2
   }
-  .pill { background:#0008; padding:4px 8px; border:1px solid #fff3; border-radius:6px; }
-  .btn {
-    cursor:pointer; user-select:none; border:1px solid #fff3; border-radius:6px; padding:4px 8px; background:#0008;
-  }
-  .hint {
-    position:fixed; left:50%; transform:translateX(-50%);
-    bottom:10px; color:#ccc; font:14px monospace; opacity:0.9; text-align:center;
+  .pill{background:#0008;padding:4px 8px;border:1px solid #fff3;border-radius:6px}
+  .btn{cursor:pointer;user-select:none;border:1px solid #fff3;border-radius:6px;padding:4px 8px;background:#0008}
+  .hint{
+    position:fixed;left:50%;transform:translateX(-50%);bottom:10px;
+    color:#ccc;font:14px monospace;opacity:.9;text-align:center;z-index:2
   }
 </style>
 </head>
 <body>
 <canvas id="game" width="960" height="540"></canvas>
-
 <div class="hud">
   <div class="pill" id="score">Score: 0</div>
   <div class="pill" id="hits">Hits: 0 / 3</div>
+  <div class="pill" id="dist">m: 0</div>
   <div class="btn" id="muteBtn" aria-label="Toggle music (M)">♪ Music: On</div>
 </div>
-<div class="hint">Controls: ← → to move • Space to jump (double-jump = fart float) • Press any key or click to start music</div>
+<div class="hint">← → move • Space jump (double-jump = gentle fart float) • Avoid spikes & pits • +10 per wolf passed</div>
 
 <script>
 (() => {
-  // ===== Canvas & Context =====
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
+  // ===== Canvas =====
+  const cvs = document.getElementById('game');
+  const ctx = cvs.getContext('2d');
+  const W = cvs.width, H = cvs.height;
 
-  const W = canvas.width, H = canvas.height;
-  const GROUND_Y = H - 80;
-
-  // ===== HUD Elements =====
+  // ===== HUD =====
   const scoreEl = document.getElementById('score');
   const hitsEl  = document.getElementById('hits');
+  const distEl  = document.getElementById('dist');
   const muteBtn = document.getElementById('muteBtn');
 
   // ===== Input =====
-  const keys = { left:false, right:false, jump:false, jumpPressed:false };
-  const keyDown = (e) => {
-    if (e.code === 'ArrowLeft')  { keys.left = true; e.preventDefault(); }
-    if (e.code === 'ArrowRight') { keys.right = true; e.preventDefault(); }
-    if (e.code === 'Space')      { if (!keys.jump) keys.jumpPressed = true; keys.jump = true; e.preventDefault(); }
+  const keys = {left:false,right:false,jump:false,jumpPressed:false};
+  addEventListener('keydown',e=>{
+    if(e.code==='ArrowLeft'){keys.left=true;e.preventDefault();}
+    if(e.code==='ArrowRight'){keys.right=true;e.preventDefault();}
+    if(e.code==='Space'){ if(!keys.jump) keys.jumpPressed=true; keys.jump=true; e.preventDefault();}
+    if(e.code==='KeyM'){ toggleMusic(); }
     startAudioOnFirstGesture();
+  },{passive:false});
+  addEventListener('keyup',e=>{
+    if(e.code==='ArrowLeft') keys.left=false;
+    if(e.code==='ArrowRight') keys.right=false;
+    if(e.code==='Space') keys.jump=false;
+  });
+  addEventListener('pointerdown',()=>startAudioOnFirstGesture(),{passive:true});
+
+  // ===== World =====
+  const GROUND_Y = H - 80;                // baseline ground height (used when no pit underfoot)
+  const world = {
+    cameraX: 0,
+    segments: [], // ground pits [{x, w}]
+    platforms: [],// rectangles {x,y,w,h}
+    spikes: [],   // rectangles {x,y,w,h}
+    decorate: [], // background bits
+    lastGenX: 0,
   };
-  const keyUp = (e) => {
-    if (e.code === 'ArrowLeft')  keys.left = false;
-    if (e.code === 'ArrowRight') keys.right = false;
-    if (e.code === 'Space')      keys.jump = false;
-  };
-  window.addEventListener('keydown', keyDown, {passive:false});
-  window.addEventListener('keyup', keyUp);
 
-  window.addEventListener('pointerdown', () => startAudioOnFirstGesture(), {passive:true});
+  // procedural generator (lightweight, endless)
+  function genUpTo(xMax) {
+    while (world.lastGenX < xMax + 1200) {
+      const start = world.lastGenX;
+      // Chance of a pit
+      if (Math.random() < 0.18) {
+        const w = 120 + Math.random()*160;
+        world.segments.push({x:start, w});
+        // spikes near the far lip sometimes
+        if (Math.random() < 0.5) {
+          world.spikes.push({x:start+w-40, y:GROUND_Y-16, w:40, h:16});
+        }
+        world.lastGenX += w + 220 + Math.random()*220;
+      } else {
+        // flat stretch
+        const flatW = 300 + Math.random()*360;
+        // add a couple platforms
+        const n = 1 + (Math.random()<0.6?1:0);
+        for (let i=0;i<n;i++){
+          const px = start + 80 + Math.random()*(flatW-160);
+          const py = GROUND_Y - (120 + Math.random()*140);
+          const pw = 100 + Math.random()*140;
+          world.platforms.push({x:px, y:py, w:pw, h:16});
+          // sometimes place spikes atop ground segment under the platform exit
+          if (Math.random()<0.35) {
+            world.spikes.push({x:px+pw+20, y:GROUND_Y-16, w:32, h:16});
+          }
+        }
+        world.lastGenX += flatW;
+      }
+      // background decor bar
+      world.decorate.push({x:start, type:'bush'});
+    }
+  }
 
-  // ===== RNG =====
-  const rand = (a,b)=> a + Math.random()*(b-a);
-  const randInt = (a,b)=> (a + Math.floor(Math.random()*(b-a+1)));
+  function pitAt(x){ // returns pit object covering x, or null
+    for(const p of world.segments){
+      if (x >= p.x && x <= p.x + p.w) return p;
+    }
+    return null;
+  }
 
-  // ===== Player =====
+  // ===== Physics / Player =====
   const player = {
-    x: 120, y: GROUND_Y - 48, w: 36, h: 48,
+    x: 80, y: GROUND_Y-52, w: 36, h: 52,
     vx: 0, vy: 0,
-    onGround: true,
-    jumps: 0, // how many jumps used in current air-time
-    maxJumps: 2,
+    onGround: true, onPlatform: null,
+    jumps: 0, maxJumps: 2,
     facing: 1,
-    hits: 0,
-    invuln: 0, // frames of invulnerability flicker
-    fartFloat: 0, // frames of reduced gravity after second jump
+    hits: 0, invuln: 0,
+    fartFloat: 0, // short reduced-gravity window on the second jump
+    dist: 0
   };
 
-  const physics = {
-    gravity: 0.75,
-    floatGravity: 0.35,
+  const phys = {
+    gravity: 0.65,
+    floatGravity: 0.45,     // milder float than v1
     moveAccel: 0.7,
-    maxSpeed: 5.0,
-    friction: 0.85,
-    jumpVel: -12.0,
-    doubleJumpVel: -11.5,
+    maxSpeed: 5.2,
+    friction: 0.86,
+    jumpVel: -11.0,         // first jump
+    doubleJumpVel: -11.0,   // second jump ~ same as first so total height ≈ 2×
+    scrollEase: 0.12,
   };
 
-  // ===== Enemies (Wolves) =====
+  // ===== Wolves =====
   const wolves = [];
   let spawnTimer = 0;
-  const spawnEveryMin = 70;   // frames
-  const spawnEveryMax = 140;
-
   function spawnWolf() {
-    const speed = rand(2.3, 4.2);
-    const y = GROUND_Y - 26;
-    const wolf = {
-      x: W + 40,
-      y,
-      w: 40,
-      h: 26,
-      vx: -speed,
-      scored: false, // score once the wolf passes player without collision
-    };
-    wolves.push(wolf);
-    spawnTimer = randInt(spawnEveryMin, spawnEveryMax);
+    // spawn a bit ahead of the player on ground (not over a pit)
+    let x = player.x + 700 + Math.random()*400;
+    const tries = 10;
+    let ok = false;
+    for (let i=0;i<tries;i++){
+      const p = pitAt(x);
+      if (!p) { ok=true; break; }
+      x += 150;
+    }
+    if (!ok) x = player.x + 900;
+    wolves.push({
+      x, y:GROUND_Y-28, w:44, h:28, vx:- (2.4 + Math.random()*1.6), scored:false
+    });
+    spawnTimer = 90 + Math.random()*120;
   }
 
-  // ===== Score & State =====
-  let score = 0;
-  let gameOver = false;
-  let restartCooldown = 0;
-
-  function addScore(n) {
-    score += n;
-    updateHUD();
-  }
-
-  function updateHUD() {
-    scoreEl.textContent = `Score: ${score}`;
-    hitsEl.textContent = `Hits: ${player.hits} / 3`;
-  }
-
-  function resetGame() {
-    wolves.length = 0;
-    score = 0;
-    player.x = 120; player.y = GROUND_Y - player.h; player.vx = 0; player.vy = 0;
-    player.onGround = true; player.jumps = 0; player.hits = 0; player.invuln = 0; player.fartFloat = 0;
-    spawnTimer = randInt(spawnEveryMin, spawnEveryMax);
-    gameOver = false;
-    restartCooldown = 0;
-    updateHUD();
-  }
-
-  // ===== Simple Rect Collision =====
-  function rectsOverlap(a,b) {
-    return !(a.x + a.w <= b.x || a.x >= b.x + b.w || a.y + a.h <= b.y || a.y >= b.y + b.h);
-  }
-
-  // ===== Particles (for fart cloud & hit sparks) =====
+  // ===== Particles =====
   const particles = [];
-  function emitFart(x,y) {
-    for (let i=0; i<12; i++) {
-      particles.push({
-        x:x+rand(-4,4), y:y+rand(0,8), vx:rand(-1.2,1.2), vy:rand(-1.0, -0.1),
-        life: rand(20,36), maxLife:0, r: rand(3,6), type:'fart'
-      });
+  function emitFart(x,y){
+    for(let i=0;i<10;i++){
+      particles.push({x:x+rand(-3,3), y:y+rand(0,8), vx:rand(-1.0,1.0), vy:rand(-0.8,-0.1), life:22+Math.random()*10, r:3+Math.random()*3, type:'fart'});
     }
   }
-  function emitHit(x,y) {
-    for (let i=0; i<10; i++) {
-      particles.push({
-        x:x+rand(-6,6), y:y+rand(-6,6), vx:rand(-1.5,1.5), vy:rand(-1.5,1.0),
-        life: rand(18,28), maxLife:0, r: rand(2,4), type:'hit'
-      });
+  function emitHit(x,y){
+    for(let i=0;i<10;i++){
+      particles.push({x:x+rand(-6,6), y:y+rand(-6,6), vx:rand(-1.5,1.5), vy:rand(-1.2,0.8), life:18+Math.random()*8, r:2+Math.random()*3, type:'hit'});
     }
   }
+  const rand = (a,b)=>a+Math.random()*(b-a);
 
-  // ===== Music (WebAudio chiptune loop) =====
-  let audioCtx = null, musicOn = true, musicStarted = false;
-  let masterGain, musicTimerId = null;
+  // ===== Score/State =====
+  let score = 0, gameOver=false, restartT=0;
 
-  // Cute 8-bit-ish melody (C major): [note, beats]
-  const melody = [
-    ['C5',1],['E5',1],['G5',1],['E5',1],
-    ['C5',1],['E5',1],['G5',1],['B5',1],
-    ['A5',1],['G5',1],['E5',1],['D5',1],
-    ['C5',2],['R',2],
-  ];
-  const tempo = 140; // BPM
-  const beatMs = 60000/tempo;
-
-  function noteToFreq(n) {
-    if (n==='R') return 0;
-    const A4 = 440;
-    const map = {C: -9, 'C#': -8, Db:-8, D: -7, 'D#': -6, Eb:-6, E: -5, F: -4, 'F#': -3, Gb:-3, G: -2, 'G#': -1, Ab:-1, A: 0, 'A#': 1, Bb:1, B: 2};
-    const m = n.match(/^([A-G]#?|Ab|Bb|Db|Eb|Gb)(\d)$/);
-    if (!m) return 0;
-    const [_, p, oct] = m;
-    const semisFromA4 = (map[p] ?? 0) + ( (parseInt(oct,10)-4)*12 );
-    return A4 * Math.pow(2, semisFromA4/12);
+  function addScore(n){ score+=n; scoreEl.textContent='Score: '+score; }
+  function updateHUD(){
+    hitsEl.textContent = `Hits: ${player.hits} / 3`;
+    distEl.textContent = `m: ${Math.floor(player.dist/40)}`;
+    scoreEl.textContent = `Score: ${score}`;
+  }
+  function resetGame(){
+    world.cameraX = 0;
+    world.segments.length=0; world.platforms.length=0; world.spikes.length=0; world.decorate.length=0; world.lastGenX=0;
+    genUpTo(1200);
+    player.x = 80; player.y = GROUND_Y-player.h; player.vx=0; player.vy=0; player.onGround=true; player.jumps=0; player.hits=0; player.invuln=0; player.fartFloat=0; player.dist=0;
+    wolves.length=0; spawnTimer = 60;
+    particles.length=0;
+    score=0; gameOver=false; restartT=0;
+    updateHUD();
   }
 
-  function startMusic() {
-    if (!musicOn || musicStarted) return;
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    masterGain = audioCtx.createGain();
-    masterGain.gain.value = 0.15;
-    masterGain.connect(audioCtx.destination);
-    musicStarted = true;
-
-    // Simple looping scheduler
-    let i=0;
-    function schedule() {
-      if (!musicOn) return;
-      const now = audioCtx.currentTime;
-      const [n, beats] = melody[i];
-      const dur = (beats * beatMs)/1000;
-
-      // Bass
-      const bassFreq = noteToFreq(n) ? noteToFreq(n)/2 : 0;
-      if (bassFreq) {
-        const o = audioCtx.createOscillator();
-        o.type = 'square';
-        o.frequency.value = bassFreq;
-        const g = audioCtx.createGain();
-        g.gain.value = 0.06;
-        o.connect(g).connect(masterGain);
-        o.start(now);
-        o.stop(now + dur*0.98);
+  // ===== Music (simple chiptune loop) =====
+  let audioCtx=null, masterGain=null, musicTimerId=null, musicOn=true, musicStarted=false;
+  const melody = [['C5',1],['E5',1],['G5',1],['E5',1],['D5',1],['F5',1],['A5',1],['G5',1],['E5',2],['R',2]];
+  const tempo = 138, beatMs = 60000/tempo;
+  function noteToFreq(n){ if(n==='R')return 0; const A4=440; const map={C:-9,'C#':-8,Db:-8,D:-7,'D#':-6,Eb:-6,E:-5,F:-4,'F#':-3,Gb:-3,G:-2,'G#':-1,Ab:-1,A:0,'A#':1,Bb:1,B:2};
+    const m=n.match(/^([A-G]#?|Ab|Bb|Db|Eb|Gb)(\d)$/); if(!m)return 0;
+    const semi=(map[m[1]]??0)+((+m[2]-4)*12); return A4*Math.pow(2,semi/12);
+  }
+  function startMusic(){
+    if(!musicOn||musicStarted)return;
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    masterGain = audioCtx.createGain(); masterGain.gain.value=0.15; masterGain.connect(audioCtx.destination);
+    musicStarted=true; let i=0;
+    function tick(){
+      if(!musicOn) return;
+      const now=audioCtx.currentTime;
+      const [n,b]=melody[i]; const dur=(b*beatMs)/1000;
+      const f=noteToFreq(n);
+      // bass
+      if(f){
+        const o=audioCtx.createOscillator(); o.type='square'; o.frequency.value=f/2;
+        const g=audioCtx.createGain(); g.gain.value=0.06; o.connect(g).connect(masterGain);
+        o.start(now); o.stop(now+dur*0.98);
       }
-
-      // Lead
-      const freq = noteToFreq(n);
-      if (freq) {
-        const o = audioCtx.createOscillator();
-        o.type = 'square';
-        o.frequency.value = freq;
-        const g = audioCtx.createGain();
-        // tiny envelope
-        const a = 0.01, d = 0.06, s = 0.12;
+      // lead
+      if(f){
+        const o=audioCtx.createOscillator(); o.type='square'; o.frequency.value=f;
+        const g=audioCtx.createGain();
         g.gain.setValueAtTime(0.0001, now);
-        g.gain.exponentialRampToValueAtTime(0.2, now + a);
-        g.gain.exponentialRampToValueAtTime(0.08, now + a + d);
-        g.gain.linearRampToValueAtTime(0.08*s, now + dur);
+        g.gain.exponentialRampToValueAtTime(0.18, now+0.01);
+        g.gain.exponentialRampToValueAtTime(0.07, now+0.08);
+        g.gain.linearRampToValueAtTime(0.02, now+dur);
         o.connect(g).connect(masterGain);
-        o.start(now);
-        o.stop(now + dur*0.98);
+        o.start(now); o.stop(now+dur*0.98);
       }
-
-      i = (i+1) % melody.length;
-      musicTimerId = setTimeout(schedule, beats*beatMs);
+      i=(i+1)%melody.length;
+      musicTimerId=setTimeout(tick,b*beatMs);
     }
-    schedule();
+    tick();
   }
+  function stopMusic(){ musicOn=false; if(musicTimerId)clearTimeout(musicTimerId); if(masterGain){try{masterGain.disconnect()}catch{}} muteBtn.textContent='♪ Music: Off'; }
+  function resumeMusic(){ musicOn=true; muteBtn.textContent='♪ Music: On'; startMusic(); }
+  function toggleMusic(){ if(musicOn) stopMusic(); else resumeMusic(); }
+  function startAudioOnFirstGesture(){ if(!musicStarted && musicOn) startMusic(); }
+  muteBtn.addEventListener('click',toggleMusic);
 
-  function stopMusic() {
-    musicOn = false;
-    if (musicTimerId) clearTimeout(musicTimerId);
-    if (masterGain) { try { masterGain.disconnect(); } catch(_){} }
-    if (audioCtx && audioCtx.state !== 'closed') { /* let context persist */ }
-    muteBtn.textContent = '♪ Music: Off';
-  }
-
-  function resumeMusic() {
-    musicOn = true;
-    muteBtn.textContent = '♪ Music: On';
-    startMusic();
-  }
-
-  function startAudioOnFirstGesture() {
-    if (!musicStarted && musicOn) startMusic();
-  }
-
-  muteBtn.addEventListener('click', () => {
-    if (musicOn) stopMusic(); else resumeMusic();
-  });
-
-  window.addEventListener('keydown', (e)=> {
-    if (e.code === 'KeyM') {
-      if (musicOn) stopMusic(); else resumeMusic();
-    }
-  });
-
-  // ===== Game Loop =====
-  let last = 0;
-  function loop(ts) {
+  // ===== Core =====
+  let last=0;
+  requestAnimationFrame(loop);
+  function loop(ts){
     requestAnimationFrame(loop);
-    const dt = (ts - last) / 16.67; // ~frames
-    last = ts;
-
+    const dt = (ts-last)/16.67 || 1; last=ts;
     update(dt);
     draw();
   }
-  requestAnimationFrame(loop);
 
-  function update(dt=1) {
-    if (gameOver) {
-      restartCooldown -= dt;
-      if (restartCooldown <= 0) resetGame();
-      return;
-    }
+  function update(dt=1){
+    if (gameOver){ restartT-=dt; if(restartT<=0) resetGame(); return; }
 
-    // Movement input
-    if (keys.left)  { player.vx -= physics.moveAccel * dt; player.facing = -1; }
-    if (keys.right) { player.vx += physics.moveAccel * dt; player.facing =  1; }
+    // Desired move
+    if (keys.left){ player.vx -= phys.moveAccel*dt; player.facing=-1; }
+    if (keys.right){ player.vx += phys.moveAccel*dt; player.facing= 1; }
+    player.vx = Math.max(-phys.maxSpeed, Math.min(phys.maxSpeed, player.vx));
 
-    // clamp max speed
-    player.vx = Math.max(-physics.maxSpeed, Math.min(physics.maxSpeed, player.vx));
-
-    // Jump handling
-    if (keys.jumpPressed) {
-      if (player.onGround) {
-        player.vy = physics.jumpVel;
-        player.onGround = false;
-        player.jumps = 1;
-      } else if (player.jumps < player.maxJumps) {
-        // double jump = fart float
-        player.vy = physics.doubleJumpVel;
+    // Jump
+    if (keys.jumpPressed){
+      if (player.onGround){
+        player.vy = phys.jumpVel;
+        player.onGround=false; player.onPlatform=null; player.jumps=1;
+      } else if (player.jumps < player.maxJumps){
+        player.vy = phys.doubleJumpVel; // same strength; overall height ≈ 2×
         player.jumps++;
-        player.fartFloat = 30; // frames of reduced gravity
-        emitFart(player.x + player.w/2, player.y + player.h - 6);
+        player.fartFloat = 20;          // tiny float window, not drastic
+        emitFart(player.x+player.w/2, player.y+player.h-6);
       }
-      keys.jumpPressed = false;
+      keys.jumpPressed=false;
     }
 
     // Gravity
-    if (!player.onGround) {
-      const g = player.fartFloat > 0 ? physics.floatGravity : physics.gravity;
-      player.vy += g * dt;
-      if (player.fartFloat > 0) player.fartFloat -= dt;
+    if (!player.onGround){
+      player.vy += (player.fartFloat>0 ? phys.floatGravity : phys.gravity)*dt;
+      if (player.fartFloat>0) player.fartFloat-=dt;
     }
 
-    // Apply velocity
+    // Integrate
+    const prevY = player.y;
     player.x += player.vx * dt * 3.0;
     player.y += player.vy * dt * 3.0;
 
-    // Friction when on ground
-    if (player.onGround) player.vx *= Math.pow(physics.friction, dt);
+    // horizontal friction when grounded
+    if (player.onGround) player.vx *= Math.pow(phys.friction, dt);
 
-    // Ground collision
-    if (player.y + player.h >= GROUND_Y) {
-      player.y = GROUND_Y - player.h;
-      player.vy = 0;
-      player.onGround = true;
-      player.jumps = 0;
-      player.fartFloat = 0;
-    } else {
-      player.onGround = false;
-    }
+    // ==== Collisions (platformer style: ground baseline with pits + one-way platforms) ====
+    player.onGround = false; player.onPlatform = null;
 
-    // Keep inside world horizontally
-    if (player.x < 0) { player.x = 0; player.vx = 0; }
-    if (player.x + player.w > W) { player.x = W - player.w; player.vx = 0; }
-
-    // Spawn wolves
-    spawnTimer -= dt;
-    if (spawnTimer <= 0) spawnWolf();
-
-    // Update wolves
-    for (let i = wolves.length - 1; i >= 0; i--) {
-      const wv = wolves[i];
-      wv.x += wv.vx * dt * 3.0;
-
-      // scoring: if a wolf passes fully left of player without having hit, award points once
-      if (!wv.scored && wv.x + wv.w < player.x) {
-        addScore(10);
-        wv.scored = true;
+    // 1) Platforms (one-way from above)
+    for (const pf of world.platforms){
+      if (player.vy >= 0 // falling
+          && prevY + player.h <= pf.y // was above last frame
+          && player.x + player.w > pf.x && player.x < pf.x + pf.w
+          && player.y + player.h >= pf.y && player.y + player.h <= pf.y + 18) {
+        player.y = pf.y - player.h; player.vy = 0; player.onGround = true; player.onPlatform = pf; player.jumps = 0; player.fartFloat=0;
       }
-
-      // remove off-screen
-      if (wv.x + wv.w < -20) wolves.splice(i,1);
     }
 
-    // Collisions with wolves
-    const pr = {x: player.x+4, y: player.y+4, w: player.w-8, h: player.h-8};
-    if (player.invuln > 0) player.invuln -= dt;
+    // 2) Ground baseline (except pits underfoot)
+    const underPit = pitAt(player.x + player.w*0.5);
+    if (!player.onGround && !underPit && player.y + player.h >= GROUND_Y){
+      player.y = GROUND_Y - player.h; player.vy = 0; player.onGround = true; player.jumps = 0; player.fartFloat=0;
+    }
+
+    // 3) Spikes damage
+    if (player.invuln>0) player.invuln -= dt;
     else {
-      for (const wv of wolves) {
-        if (rectsOverlap(pr, wv)) {
-          player.hits++;
+      for (const s of world.spikes){
+        if (rectOverlap(player, s)){
+          player.hits++; player.invuln = 40; emitHit(player.x+player.w/2, player.y+player.h/2);
+          player.vy = -7; player.vx += (player.x < s.x ? -2.5 : 2.5);
           updateHUD();
-          player.invuln = 40;  // ~2/3s flicker
-          emitHit(player.x + player.w/2, player.y + player.h/2);
-          // small knockback
-          player.vx += 3 * (player.x < wv.x ? -1 : 1);
-          player.vy = -6;
-          if (player.hits >= 3) {
-            gameOver = true;
-            restartCooldown = 60; // about 1s before restart
-          }
+          if (player.hits >= 3){ triggerKO(); }
           break;
         }
       }
     }
 
-    // Particles
-    for (let i = particles.length - 1; i >= 0; i--) {
-      const p = particles[i];
-      p.x += p.vx * dt * 2.0;
-      p.y += p.vy * dt * 2.0;
-      p.vy += 0.06 * dt;
-      p.life -= dt;
-      if (p.life <= 0) particles.splice(i,1);
+    // 4) Pits = instant KO (fell below screen)
+    if (player.y > H + 40){ triggerKO(true); }
+
+    // Keep from drifting far left of start
+    if (player.x < 0){ player.x = 0; player.vx = Math.max(0, player.vx); }
+
+    // ==== Camera follows (keep player ~center) ====
+    const targetCam = player.x - W*0.45;
+    world.cameraX += (targetCam - world.cameraX) * phys.scrollEase;
+    if (world.cameraX < 0) world.cameraX = 0;
+
+    // ==== Generate more world ahead ====
+    genUpTo(world.cameraX + W + 800);
+
+    // ==== Wolves ====
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) spawnWolf();
+    for (let i=wolves.length-1;i>=0;i--){
+      const w = wolves[i];
+      w.x += (w.vx) * dt * 3.0; // move left relative to world
+      // fall into pits? keep them on baseline by skipping pit ranges
+      const pit = pitAt(w.x + w.w/2);
+      if (pit) { w.x = pit.x + pit.w + 10; }
+      // scoring
+      if (!w.scored && w.x + w.w < player.x){ addScore(10); w.scored=true; }
+      // collisions
+      if (player.invuln<=0 && rectOverlap(shrinkRect(player,4), w)){
+        player.hits++; player.invuln=40; emitHit(player.x+player.w/2, player.y+player.h/2);
+        player.vy = -7;
+        if (player.hits >= 3) triggerKO();
+        updateHUD();
+      }
+      // remove if far behind
+      if (w.x + w.w < world.cameraX - 200) wolves.splice(i,1);
     }
+
+    // ==== Particles ====
+    for (let i=particles.length-1;i>=0;i--){
+      const p=particles[i];
+      p.x += p.vx * dt * 2.0; p.y += p.vy * dt * 2.0; p.vy += 0.05*dt; p.life -= dt;
+      if (p.life<=0) particles.splice(i,1);
+    }
+
+    // distance
+    player.dist = Math.max(player.dist, player.x);
+    updateHUD();
   }
 
-  // ===== Art =====
-  function drawBackground() {
+  function triggerKO(fall=false){
+    gameOver = true; restartT=60;
+  }
+
+  function rectOverlap(a,b){
+    return !(a.x+a.w<=b.x || a.x>=b.x+b.w || a.y+a.h<=b.y || a.y>=b.y+b.h);
+  }
+  function shrinkRect(r,m){ return {x:r.x+m,y:r.y+m,w:r.w-2*m,h:r.h-2*m}; }
+
+  // ===== Rendering =====
+  function draw(){
     // sky
-    ctx.fillStyle = '#6bd0ff';
-    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = '#71c8ff'; ctx.fillRect(0,0,W,H);
 
-    // far hills
-    ctx.fillStyle = '#87e293';
-    for (let i=0;i<6;i++) {
-      const x = i*200 - (Date.now()/40)%200;
-      ctx.fillRect(x, H-180, 180, 20);
-      ctx.fillRect(x+40, H-200, 140, 18);
+    // parallax hills
+    const cam = world.cameraX;
+    drawParallax(cam);
+
+    // ground strip
+    drawGround(cam);
+
+    // platforms
+    for (const pf of world.platforms){
+      if (pf.x+pf.w < cam-50 || pf.x > cam+W+50) continue;
+      drawPlatform(pf, cam);
     }
 
-    // ground
-    ctx.fillStyle = '#795548';
-    ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
-    // grass strip
-    ctx.fillStyle = '#3aa655';
-    ctx.fillRect(0,GROUND_Y-8,W,10);
-  }
+    // spikes
+    for (const s of world.spikes){
+      if (s.x+s.w < cam-50 || s.x > cam+W+50) continue;
+      drawSpikes(s, cam);
+    }
 
-  function drawPlayer() {
-    // Flicker if invulnerable
-    if (player.invuln > 0 && Math.floor(player.invuln*3)%2===0) return;
+    // wolves
+    for (const w of wolves){
+      if (w.x+w.w < cam-80 || w.x > cam+W+80) continue;
+      drawWolf(w, cam);
+    }
 
-    const {x,y,w,h} = player;
-    // shoes
-    ctx.fillStyle = '#111';
-    ctx.fillRect(x+4, y+h-4, w-8, 4);
+    // player
+    drawBoy(player, cam);
 
-    // legs
-    ctx.fillStyle = '#2b2b2b';
-    ctx.fillRect(x+6, y+h-16, w-12, 12);
+    // particles
+    drawParticles(cam);
 
-    // torso (green plaid)
-    // base green
-    ctx.fillStyle = '#1f8a36';
-    ctx.fillRect(x+4, y+12, w-8, h-28);
-    // plaid stripes
-    ctx.fillStyle = '#9de09f';
-    for (let sx = x+4; sx < x+w-8; sx += 6) ctx.fillRect(sx, y+12, 2, h-28);
-    for (let sy = y+12; sy < y+h-16; sy += 6) ctx.fillRect(x+4, sy, w-8, 2);
-
-    // arms
-    ctx.fillStyle = '#1f8a36';
-    ctx.fillRect(x-2, y+18, 8, 10);
-    ctx.fillRect(x+w-6, y+18, 8, 10);
-
-    // head (skin)
-    ctx.fillStyle = '#ffcc99';
-    ctx.fillRect(x+8, y, w-16, 12);
-
-    // hair (black)
-    ctx.fillStyle = '#111';
-    ctx.fillRect(x+6, y-2, w-12, 6);
-
-    // eye (simple)
-    ctx.fillStyle = '#000';
-    const eyeX = player.facing === 1 ? x+w-16 : x+8;
-    ctx.fillRect(eyeX, y+4, 2, 2);
-
-    // fart cloud hint if active
-    if (player.fartFloat > 0) {
-      ctx.globalAlpha = 0.7;
-      ctx.fillStyle = '#c9f2be';
-      ctx.fillRect(x+8, y+h-6, 6, 4);
-      ctx.globalAlpha = 1.0;
+    // game over veil
+    if (gameOver){
+      ctx.fillStyle = '#000a'; ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = '#fff'; ctx.font='28px monospace'; ctx.textAlign='center';
+      ctx.fillText('Ouch! Restarting…', W/2, H/2);
     }
   }
 
-  function drawWolf(wv) {
-    // body
-    ctx.fillStyle = '#6b615a';
-    ctx.fillRect(wv.x, wv.y, wv.w, wv.h);
-    // legs
-    ctx.fillStyle = '#524a45';
-    ctx.fillRect(wv.x+4, wv.y+wv.h-6, 6, 6);
-    ctx.fillRect(wv.x+wv.w-10, wv.y+wv.h-6, 6, 6);
+  function drawParallax(camX){
+    // distant mountains
+    ctx.fillStyle='#93e3a2';
+    for (let i=0;i<6;i++){
+      const x = Math.floor((i*260 - (camX*0.3)%260));
+      ctx.fillRect(x, H-200, 220, 20);
+      ctx.fillRect(x+40, H-220, 160, 18);
+    }
+    // clouds
+    ctx.fillStyle='#ffffffaa';
+    for (let i=0;i<5;i++){
+      const x = Math.floor((i*320 - (camX*0.15)%320));
+      ctx.fillRect(x, 80+ (i%2)*20, 60, 14);
+      ctx.fillRect(x+22, 70+ (i%2)*20, 40, 14);
+    }
+  }
+
+  function drawGround(camX){
+    // base ground everywhere EXCEPT pits
+    // draw a long strip, then carve pits visually by overlaying sky
+    ctx.fillStyle='#6b4a2e';
+    ctx.fillRect(-camX, GROUND_Y, W+2000, H-GROUND_Y);
+    // grass
+    ctx.fillStyle='#39a854'; ctx.fillRect(-camX, GROUND_Y-8, W+2000, 10);
+    // carve pits
+    ctx.fillStyle='#71c8ff';
+    for (const p of world.segments){
+      const sx = p.x - camX;
+      if (sx > W || sx + p.w < -200) continue;
+      ctx.fillRect(sx, GROUND_Y-9, p.w, H-(GROUND_Y-9));
+    }
+  }
+
+  function drawPlatform(pf, camX){
+    const x = Math.floor(pf.x - camX), y = Math.floor(pf.y);
+    ctx.fillStyle='#8d735a'; ctx.fillRect(x, y, pf.w, pf.h);
+    ctx.fillStyle='#49b765'; ctx.fillRect(x, y-6, pf.w, 6);
+    // little supports
+    ctx.fillStyle='#735a46';
+    for (let i=8;i<pf.w;i+=24){ ctx.fillRect(x+i, y+pf.h, 3, 10); }
+  }
+
+  function drawSpikes(s, camX){
+    const x = Math.floor(s.x - camX), y = Math.floor(s.y);
+    // base
+    ctx.fillStyle='#444'; ctx.fillRect(x, y+s.h-4, s.w, 4);
+    // teeth
+    ctx.fillStyle='#ddd';
+    const step = 8;
+    for (let i=0;i<s.w;i+=step){
+      const bx = x+i;
+      // tiny triangles
+      ctx.beginPath();
+      ctx.moveTo(bx, y+s.h-4);
+      ctx.lineTo(bx+step/2, y);
+      ctx.lineTo(bx+step, y+s.h-4);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  function drawParticles(camX){
+    for (const p of particles){
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life/25));
+      ctx.fillStyle = p.type==='fart' ? '#c9f2be' : '#ffd36b';
+      ctx.fillRect(Math.floor(p.x - camX), Math.floor(p.y), p.r, p.r);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawWolf(w, camX){
+    const x = Math.floor(w.x - camX), y = Math.floor(w.y);
+    // body (rounder)
+    ctx.fillStyle = '#7a6f67'; ctx.fillRect(x+4, y+4, w.w-8, w.h-8);
+    // back
+    ctx.fillStyle = '#6a5f58'; ctx.fillRect(x, y+8, w.w, w.h-12);
+    // head
+    ctx.fillStyle = '#6a5f58'; ctx.fillRect(x-10, y+2, 20, 18);
     // ear
-    ctx.fillStyle = '#4a433f';
-    ctx.fillRect(wv.x+wv.w-8, wv.y-6, 6, 6);
+    ctx.fillStyle = '#524a45'; ctx.fillRect(x+2, y-6, 8, 8);
     // eye
-    ctx.fillStyle = '#000';
-    ctx.fillRect(wv.x+wv.w-14, wv.y+4, 2, 2);
+    ctx.fillStyle = '#000'; ctx.fillRect(x-2, y+8, 2, 2);
     // nose
-    ctx.fillRect(wv.x-2, wv.y+wv.h-10, 4, 4);
-    // cute blush
-    ctx.fillStyle = '#ff9bb3';
-    ctx.fillRect(wv.x+wv.w-18, wv.y+8, 3, 3);
+    ctx.fillRect(x-12, y+14, 4, 4);
+    // blush
+    ctx.fillStyle = '#ff9bb3'; ctx.fillRect(x, y+12, 3, 3);
+    // little legs
+    ctx.fillStyle = '#524a45';
+    ctx.fillRect(x+6, y+w.h-12, 6, 10);
+    ctx.fillRect(x+w.w-16, y+w.h-12, 6, 10);
   }
 
-  function drawParticles() {
-    for (const p of particles) {
-      const t = Math.max(0, Math.min(1, p.life / (p.maxLife || 30)));
-      ctx.globalAlpha = Math.max(0, Math.min(1, p.life/30));
-      if (p.type==='fart') ctx.fillStyle = '#c9f2be';
-      else ctx.fillStyle = '#ffd36b';
-      ctx.fillRect(Math.floor(p.x), Math.floor(p.y), p.r, p.r);
+  function drawBoy(p, camX){
+    // flicker on invuln
+    if (p.invuln>0 && (Math.floor(p.invuln*3)%2===0)) return;
+    const x = Math.floor(p.x - camX), y = Math.floor(p.y), w=p.w, h=p.h;
+
+    // shoes
+    ctx.fillStyle='#141414'; ctx.fillRect(x+5, y+h-4, w-10, 4);
+
+    // legs (dark jeans with knee highlight)
+    ctx.fillStyle='#2f2f3a'; ctx.fillRect(x+7, y+h-18, w-14, 14);
+    ctx.fillStyle='#3b3b49'; ctx.fillRect(x+7, y+h-14, w-14, 2);
+
+    // torso base
+    ctx.fillStyle='#1f8a36'; ctx.fillRect(x+5, y+14, w-10, h-32);
+
+    // plaid details (lighter green grid)
+    ctx.fillStyle='#98e59b';
+    for (let sx=x+6; sx<x+w-10; sx+=5) ctx.fillRect(sx, y+14, 2, h-32);
+    for (let sy=y+14; sy<y+h-18; sy+=5) ctx.fillRect(x+5, sy, w-10, 2);
+
+    // arms (short sleeves)
+    ctx.fillStyle='#1f8a36';
+    ctx.fillRect(x-1, y+20, 8, 10);
+    ctx.fillRect(x+w-7, y+20, 8, 10);
+
+    // hands
+    ctx.fillStyle='#ffcc99';
+    ctx.fillRect(x-1, y+28, 6, 6);
+    ctx.fillRect(x+w-6, y+28, 6, 6);
+
+    // head
+    ctx.fillStyle='#ffcc99'; ctx.fillRect(x+9, y, w-18, 14);
+
+    // hair (black, slightly swooped)
+    ctx.fillStyle='#121212';
+    ctx.fillRect(x+6, y-2, w-12, 7);
+    ctx.fillRect(x+6+(p.facing===1?4:0), y-1, 6, 4);
+
+    // eyes / mouth
+    ctx.fillStyle='#000';
+    const eyeX = p.facing===1 ? x+w-18 : x+10;
+    ctx.fillRect(eyeX, y+5, 2, 2);
+    ctx.fillStyle='#8a3b3b';
+    ctx.fillRect(x+w/2-2, y+10, 4, 1);
+
+    // tiny fart puff if active
+    if (p.fartFloat>0){
+      ctx.globalAlpha=0.7; ctx.fillStyle='#c9f2be';
+      ctx.fillRect(x+8, y+h-6, 6,4);
+      ctx.globalAlpha=1;
     }
-    ctx.globalAlpha = 1.0;
   }
 
-  function drawGameOver() {
-    ctx.fillStyle = '#000a';
-    ctx.fillRect(0,0,W,H);
-    ctx.fillStyle = '#fff';
-    ctx.font = '28px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('Ouch! The wolves got you...', W/2, H/2 - 10);
-    ctx.font = '18px monospace';
-    ctx.fillText('Restarting...', W/2, H/2 + 20);
-  }
-
-  function draw() {
-    drawBackground();
-
-    // Draw wolves
-    for (const wv of wolves) drawWolf(wv);
-
-    // Draw player & particles
-    drawPlayer();
-    drawParticles();
-
-    if (gameOver) drawGameOver();
-  }
-
-  // ===== Kickoff =====
+  // ===== Start =====
   resetGame();
+
 })();
 </script>
 </body>
